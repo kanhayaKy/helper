@@ -60,13 +60,36 @@ jobs:
       - name: Pull and save Supabase images
         if: steps.cache-supabase-images.outputs.cache-hit != 'true'
         run: |
-          echo "Parsing image names from supabase/config.ci.toml..."
-          IMAGES=$(grep -o 'image = "[^"]*"' supabase/config.ci.toml | sed 's/image = "//;s/"//')
+          echo "Starting Supabase to determine required images..."
+          pnpm supabase start &
+          
+          echo "Waiting for Supabase services to be available..."
+          for i in {1..10}; do
+            STATUS_JSON=$(pnpm supabase status -o json || echo "failed")
+            if [[ "$STATUS_JSON" != "failed" && $(echo "$STATUS_JSON" | jq 'length') -gt 0 ]]; then
+              echo "Supabase status is available."
+              break
+            fi
+            echo "Attempt $i: Supabase not ready yet, waiting 5 seconds..."
+            sleep 5
+          done
+
+          IMAGES=$(pnpm supabase status -o json | jq -r '.[].image')
+          if [ -z "$IMAGES" ]; then
+            echo "::error::Could not determine Supabase Docker images. Aborting."
+            exit 1
+          fi
+
           echo "Required images:"
           echo "$IMAGES"
-          
-          echo "Pulling and saving Supabase Docker images..."
+
+          echo "Pulling images..."
           echo "$IMAGES" | xargs -n 1 docker pull
+
+          echo "Stopping Supabase..."
+          pnpm supabase stop --no-backup
+
+          echo "Saving images to cache..."
           docker save $(echo "$IMAGES") -o /tmp/supabase-images.tar
 
       - name: Cache Playwright browsers
