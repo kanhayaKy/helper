@@ -31,7 +31,7 @@ jobs:
         supabase/storage-api:v0.48.2
         kong:3.6.1
         postgrest/postgrest:v11.2.2
-        supabase/studio:20240705
+        supabase/studio:latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
