@@ -5,6 +5,23 @@
 
 set -e
 
+start_time=$(date +%s)
+
+# Logging functions
+start_step() {
+    echo "========================================================================"
+    echo "▶️  $1"
+    echo "========================================================================"
+    STEP_START_TIME=$(date +%s)
+}
+
+end_step() {
+    STEP_END_TIME=$(date +%s)
+    ELAPSED_TIME=$((STEP_END_TIME - STEP_START_TIME))
+    echo "✅ Done in ${ELAPSED_TIME}s"
+    echo ""
+}
+
 echo "🎭 Setting up E2E Testing Environment for Helper"
 echo "================================================"
 
@@ -45,56 +62,65 @@ set +o allexport
 CI="${CI:-false}"
 echo "CI is set to $CI"
 
-echo "🛑 Ensuring no Supabase services are running..."
+start_step "Ensuring no Supabase services are running"
 pnpm run with-test-env pnpm supabase stop --no-backup 2>/dev/null || true
+end_step
 
-echo "🔍 Checking for existing Supabase containers for project ${SUPABASE_PROJECT_ID}..."
+start_step "Cleaning up existing Supabase containers (if any)"
 EXISTING_CONTAINERS=$(docker ps -a -q --filter "name=${SUPABASE_PROJECT_ID}" 2>/dev/null || true)
 if [ ! -z "$EXISTING_CONTAINERS" ]; then
-    echo "🧹 Found existing Supabase containers for project ${SUPABASE_PROJECT_ID}, cleaning up..."
-    echo "🛑 Stopping containers..."
+    echo "Found existing Supabase containers for project ${SUPABASE_PROJECT_ID}, cleaning up..."
+    echo "Stopping containers..."
     docker stop $EXISTING_CONTAINERS || true
-    echo "🗑️ Removing containers..."
+    echo "Removing containers..."
     docker rm $EXISTING_CONTAINERS || true
-    echo "✅ Existing containers cleaned up"
+    echo "Existing containers cleaned up"
 else
-    echo "✅ No existing Supabase containers found for project ${SUPABASE_PROJECT_ID}"
+    echo "No existing Supabase containers found for project ${SUPABASE_PROJECT_ID}"
 fi
+end_step
 
-echo "🎉 Starting Supabase services..."
+start_step "Starting Supabase services"
 if [ "$CI" = "true" ]; then
   echo "🪄 Using slim Supabase config for CI"
   export SUPABASE_CONFIG_PATH="./supabase/config.ci.toml"
 fi
 pnpm run with-test-env pnpm supabase start
+end_step
 
 echo "⏳ Waiting for Auth service to initialize..."
 sleep 5
 
-echo "🔄 Resetting database..."
+start_step "Resetting database"
 pnpm run with-test-env pnpm supabase db reset
+end_step
 
-echo "📦 Applying database migrations..."
+start_step "Applying database migrations"
 pnpm run with-test-env drizzle-kit migrate --config ./db/drizzle.config.ts
+end_step
 
 if [ "$CI" != "true" ]; then
-echo "📦 Building packages..."
-pnpm run-on-packages build
+    start_step "Building packages"
+    pnpm run-on-packages build
+    end_step
 else
-echo "⏭️  Skipping package builds in CI (built during pnpm install postinstall)"
+    echo "⏭️  Skipping package builds in CI (built during pnpm install postinstall)"
 fi
 
-echo "🌱 Seeding the database..."
+start_step "Seeding the database"
 pnpm run with-test-env pnpm tsx --conditions=react-server ./db/seeds/seedDatabase.ts
+end_step
 
 if [ "$CI" != "true" ]; then
-echo "📦 Installing Playwright and dependencies..."
-pnpm install
+    start_step "Installing Playwright and dependencies"
+    pnpm install
+    end_step
 
-echo "🎭 Installing Playwright browsers..."
-pnpm run with-test-env playwright install --with-deps chromium
+    start_step "Installing Playwright browsers"
+    pnpm run with-test-env playwright install --with-deps chromium
+    end_step
 else
-echo "⏭️  Skipping pnpm install and Playwright browser install in CI (handled by workflow)"
+    echo "⏭️  Skipping pnpm install and Playwright browser install in CI (handled by workflow)"
 fi
 
 echo ""
@@ -120,4 +146,8 @@ echo "   • Verify all services are running"
 echo "   • Check test credentials in .env.test.local"
 echo "   • Ensure Docker is running for Supabase"
 echo ""
-echo "Happy testing! 🚀" 
+echo "Happy testing! 🚀"
+
+end_time=$(date +%s)
+total_elapsed_time=$((end_time - start_time))
+echo "Total setup time: ${total_elapsed_time}s"

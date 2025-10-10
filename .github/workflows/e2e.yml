@@ -23,6 +23,7 @@ jobs:
       FIRECRAWL_API_KEY: test-firecrawl-api-key
       NODE_OPTIONS: --max_old_space_size=8192
       PNPM_STORE_PATH: ~/.pnpm-store
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -37,13 +38,68 @@ jobs:
         with:
           node-version-file: ".node-version"
 
-      - name: Cache pnpm store
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Cache Supabase Docker images
+        id: cache-supabase-images
         uses: actions/cache@v4
         with:
-          path: ~/.pnpm-store
-          key: pnpm-store-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            pnpm-store-${{ runner.os }}-
+          path: /tmp/supabase-images
+          key: supabase-images-${{ runner.os }}-${{ hashFiles('supabase/config.ci.toml', 'scripts/setup-e2e-tests.sh') }}
+      
+      - name: Load cached Supabase images
+        if: steps.cache-supabase-images.outputs.cache-hit == 'true'
+        run: |
+          echo "📥 Loading Supabase Docker images from cache..."
+          for tar_file in /tmp/supabase-images/*.tar; do
+            echo "Loading: $(basename "$tar_file")"
+            docker load -i "$tar_file"
+          done
+          echo "✅ Successfully loaded cached Docker images"
+      
+      - name: Extract required Supabase images
+        if: steps.cache-supabase-images.outputs.cache-hit != 'true'
+        run: |
+          echo "🔍 Determining required Supabase Docker images..."
+          
+          # Ensure the cache directory exists
+          mkdir -p /tmp/supabase-images
+          
+          # For CI, we use a specific configuration file
+          export SUPABASE_CONFIG_PATH="./supabase/config.ci.toml"
+          
+          # Extract the image names from the config file - easier than starting Supabase
+          POSTGRES_IMAGE=$(grep -o 'image = "supabase/postgres:[^"]*"' supabase/config.ci.toml | sed 's/image = "//;s/"//' || echo "supabase/postgres:15.1.0.110")
+          
+          # Add the standard Supabase services that are always used
+          STANDARD_IMAGES=(
+            "$POSTGRES_IMAGE"
+            "supabase/gotrue:v2.131.0"
+            "supabase/realtime:v2.28.2"
+            "supabase/storage-api:v0.48.2"
+            "kong:3.6.1"
+            "postgrest/postgrest:v11.2.2"
+            "supabase/studio:latest"
+          )
+          
+          echo "📋 Required images:"
+          for image in "${STANDARD_IMAGES[@]}"; do
+            echo "  - $image"
+          done
+          
+          echo "⬇️ Pulling and saving Supabase images individually..."
+          for image in "${STANDARD_IMAGES[@]}"; do
+            echo "Pulling: $image"
+            docker pull "$image"
+            
+            # Save each image separately to avoid the 10GB cache size limit
+            image_name=$(echo "$image" | sed 's/\//-/g' | sed 's/:/-/g')
+            echo "Saving: $image as /tmp/supabase-images/${image_name}.tar"
+            docker save "$image" -o "/tmp/supabase-images/${image_name}.tar"
+          done
+          
+          echo "✅ Successfully saved all Docker images to cache"
 
       - name: Cache Playwright browsers
         id: playwright-cache
@@ -53,9 +109,6 @@ jobs:
           key: playwright-browsers-${{ runner.os }}-v1
           restore-keys: |
             playwright-browsers-${{ runner.os }}-
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
 
       - name: Cache Next.js build cache
         uses: actions/cache@v4
