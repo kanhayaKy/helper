@@ -41,56 +41,65 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install jq
-        run: sudo apt-get install -y jq
-
       - name: Cache Supabase Docker images
         id: cache-supabase-images
         uses: actions/cache@v4
         with:
-          path: /tmp/supabase-images.tar
-          key: supabase-images-${{ runner.os }}-${{ hashFiles('supabase/config.ci.toml') }}
-
-      - name: Load Supabase images from cache
+          path: /tmp/supabase-images
+          key: supabase-images-${{ runner.os }}-${{ hashFiles('supabase/config.ci.toml', 'scripts/setup-e2e-tests.sh') }}
+      
+      - name: Load cached Supabase images
         if: steps.cache-supabase-images.outputs.cache-hit == 'true'
         run: |
-          echo "Loading Supabase Docker images from cache..."
-          docker load -i /tmp/supabase-images.tar
-
-      - name: Pull and save Supabase images
+          echo "📥 Loading Supabase Docker images from cache..."
+          for tar_file in /tmp/supabase-images/*.tar; do
+            echo "Loading: $(basename "$tar_file")"
+            docker load -i "$tar_file"
+          done
+          echo "✅ Successfully loaded cached Docker images"
+      
+      - name: Extract required Supabase images
         if: steps.cache-supabase-images.outputs.cache-hit != 'true'
         run: |
-          echo "Starting Supabase to determine required images..."
-          pnpm supabase start &
+          echo "🔍 Determining required Supabase Docker images..."
           
-          echo "Waiting for Supabase services to be available..."
-          for i in {1..10}; do
-            STATUS_JSON=$(pnpm supabase status -o json || echo "failed")
-            if [[ "$STATUS_JSON" != "failed" && $(echo "$STATUS_JSON" | jq 'length') -gt 0 ]]; then
-              echo "Supabase status is available."
-              break
-            fi
-            echo "Attempt $i: Supabase not ready yet, waiting 5 seconds..."
-            sleep 5
+          # Ensure the cache directory exists
+          mkdir -p /tmp/supabase-images
+          
+          # For CI, we use a specific configuration file
+          export SUPABASE_CONFIG_PATH="./supabase/config.ci.toml"
+          
+          # Extract the image names from the config file - easier than starting Supabase
+          POSTGRES_IMAGE=$(grep -o 'image = "supabase/postgres:[^"]*"' supabase/config.ci.toml | sed 's/image = "//;s/"//' || echo "supabase/postgres:15.1.0.110")
+          
+          # Add the standard Supabase services that are always used
+          STANDARD_IMAGES=(
+            "$POSTGRES_IMAGE"
+            "supabase/gotrue:v2.131.0"
+            "supabase/realtime:v2.28.2"
+            "supabase/storage-api:v0.48.2"
+            "kong:3.6.1"
+            "postgrest/postgrest:v11.2.2"
+            "supabase/studio:latest"
+          )
+          
+          echo "📋 Required images:"
+          for image in "${STANDARD_IMAGES[@]}"; do
+            echo "  - $image"
           done
-
-          IMAGES=$(pnpm supabase status -o json | jq -r '.[].image')
-          if [ -z "$IMAGES" ]; then
-            echo "::error::Could not determine Supabase Docker images. Aborting."
-            exit 1
-          fi
-
-          echo "Required images:"
-          echo "$IMAGES"
-
-          echo "Pulling images..."
-          echo "$IMAGES" | xargs -n 1 docker pull
-
-          echo "Stopping Supabase..."
-          pnpm supabase stop --no-backup
-
-          echo "Saving images to cache..."
-          docker save $(echo "$IMAGES") -o /tmp/supabase-images.tar
+          
+          echo "⬇️ Pulling and saving Supabase images individually..."
+          for image in "${STANDARD_IMAGES[@]}"; do
+            echo "Pulling: $image"
+            docker pull "$image"
+            
+            # Save each image separately to avoid the 10GB cache size limit
+            image_name=$(echo "$image" | sed 's/\//-/g' | sed 's/:/-/g')
+            echo "Saving: $image as /tmp/supabase-images/${image_name}.tar"
+            docker save "$image" -o "/tmp/supabase-images/${image_name}.tar"
+          done
+          
+          echo "✅ Successfully saved all Docker images to cache"
 
       - name: Cache Playwright browsers
         id: playwright-cache
