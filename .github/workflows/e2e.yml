@@ -41,12 +41,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install jq
+        run: sudo apt-get install -y jq
+
       - name: Cache Supabase Docker images
         id: cache-supabase-images
         uses: actions/cache@v4
         with:
           path: /tmp/supabase-images.tar
-          key: supabase-images-${{ runner.os }}-${{ hashFiles('supabase/config.toml') }}
+          key: supabase-images-${{ runner.os }}-${{ hashFiles('supabase/config.ci.toml') }}
 
       - name: Load Supabase images from cache
         if: steps.cache-supabase-images.outputs.cache-hit == 'true'
@@ -57,22 +60,14 @@ jobs:
       - name: Pull and save Supabase images
         if: steps.cache-supabase-images.outputs.cache-hit != 'true'
         run: |
-          echo "Pulling and saving Supabase Docker images..."
-          # Start supabase to pull images, but don't wait for it to be healthy
-          pnpm supabase start &
-          sleep 30 # Give it some time to start pulling
-          # Get the list of images from the supabase CLI
-          IMAGES=$(pnpm supabase status -o json | jq -r '.[].image')
+          echo "Parsing image names from supabase/config.ci.toml..."
+          IMAGES=$(grep -o 'image = "[^"]*"' supabase/config.ci.toml | sed 's/image = "//;s/"//')
           echo "Required images:"
           echo "$IMAGES"
-          # Wait for all images to be pulled
-          for img in $IMAGES; do
-            docker pull $img
-          done
-          # Stop the partially started services
-          pnpm supabase stop --no-backup
-          # Save the images for caching
-          docker save $IMAGES -o /tmp/supabase-images.tar
+          
+          echo "Pulling and saving Supabase Docker images..."
+          echo "$IMAGES" | xargs -n 1 docker pull
+          docker save $(echo "$IMAGES") -o /tmp/supabase-images.tar
 
       - name: Cache Playwright browsers
         id: playwright-cache
